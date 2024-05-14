@@ -10,8 +10,9 @@
 //=============================================================================
 //=============================================================================
 
+#include "src/quaternion/Quaternion.h"
+#include "src/core_queue/CoreQueue.h"
 #include "LSM6DSOXSensor.h"
-#include "Quaternion.h"
 #include "Wire.h"
 #include "PinDefs.h"
 
@@ -21,17 +22,35 @@
 #include <assert.h>
 
 //=============================================================================
+// Defines
+//=============================================================================
+// #define USE_SECOND_CORE
+
+//=============================================================================
 // Objects / RAM
 //=============================================================================
 
+//
 // IMU data
+//
 LSM6DSOXSensor  IMU = LSM6DSOXSensor(&Wire, LSM6DSOX_I2C_ADD_L);
 
-// Control data
+//
+// Queue data
+//
+#ifdef USING_CORE1
+QueueFIFO       Core0_FIFO = QueueFIFO(8);
+QueueFIFO       Core1_FIFO = QueueFIFO(8);
+#endif
+
+//
+// Attitude data
+//
 Quaternion_t  Attitude = { 1, 0, 0, 0 };
 
+//
 // Flags
-uint8_t GyroDataRdy = 0;
+//
 
 //=============================================================================
 // Additional function prototypes
@@ -45,6 +64,10 @@ uint8_t GyroDataRdy = 0;
 void setup() 
 {
     // Local variables
+
+#ifndef USING_CORE1
+    Serial.begin();
+#endif
 
     // Setup pins
     pinMode(LED_BUILTIN, OUTPUT);
@@ -73,14 +96,18 @@ void setup()
 void loop() 
 {
     // Local variables
-    Euler_t       rads;
-    Quaternion_t  q_prime;
-    union
+    Euler_t         rads;
+    Quaternion_t    q_prime;
+    uint8_t         GyroDataRdy = 0;
+#ifndef USING_CORE1
+    char            str[80];
+#endif
+    struct
     {
-        int32_t data[3];
         int32_t wx;
         int32_t wy;
         int32_t wz;
+        int32_t data[3];
     } gyro;
 
     // Check if data is ready for gyro
@@ -91,6 +118,10 @@ void loop()
         GyroDataRdy = 0;
         IMU.Get_G_Axes(gyro.data);
 
+        gyro.wx = gyro.data[0];
+        gyro.wy = gyro.data[1];
+        gyro.wz = gyro.data[2];
+
         // Convert the gyro from degrees to radians
         rads = Quaternion_Degrees2Euler((float)gyro.wx, 
                                         (float)gyro.wy, 
@@ -98,25 +129,30 @@ void loop()
         
         // Compute the quaternion derivative
         // See STM's note: DT0060
-        q_prime.qw = (-Attitude.qx*rads.roll - Attitude.qy*rads.pitch - Attitude.qz*rads.yaw);
-        q_prime.qx = (Attitude.qw*rads.roll - Attitude.qz*rads.pitch + Attitude.qy*rads.yaw);
-        q_prime.qy = (Attitude.qz*rads.roll + Attitude.qw*rads.pitch - Attitude.qx*rads.yaw);
-        q_prime.qz = (-Attitude.qy*rads.roll + Attitude.qx*rads.pitch + Attitude.qw*rads.yaw);
-        q_prime = Quaternion_ScalarMult(q_prime, 0.5);
+        q_prime.qw = 0.5 * (-Attitude.qx*rads.roll - Attitude.qy*rads.pitch - Attitude.qz*rads.yaw);
+        q_prime.qx = 0.5 * (Attitude.qw*rads.roll - Attitude.qz*rads.pitch + Attitude.qy*rads.yaw);
+        q_prime.qy = 0.5 * (Attitude.qz*rads.roll + Attitude.qw*rads.pitch - Attitude.qx*rads.yaw);
+        q_prime.qz = 0.5 * (-Attitude.qy*rads.roll + Attitude.qx*rads.pitch + Attitude.qw*rads.yaw);
 
         // Update the attitude
-        q_prime = Quaternion_ScalarMult(q_prime, 0.002);    // About 2ms for each timestep
+        // q_prime = Quaternion_ScalarMult(q_prime, 0.002);    // About 2ms for each timestep
         Attitude = Quaternion_Add(Attitude, q_prime);
         Attitude = Quaternion_Norm(Attitude);
-
-        rp2040.fifo.push(Attitude.qw);
-        rp2040.fifo.push(Attitude.qx);
-        rp2040.fifo.push(Attitude.qy);
-        rp2040.fifo.push(Attitude.qz);
+#ifdef USING_CORE1
+        Core1_FIFO.push(0.0f);
+        Core1_FIFO.push(rads.roll);
+        Core1_FIFO.push(rads.pitch);
+        Core1_FIFO.push(rads.yaw);
+#else
+        snprintf(str, sizeof(str), "Core0:qw=%.2f,qx=%.2f,qy=%.2f,qz=%.2f",  
+                  Attitude.qw, Attitude.qx, Attitude.qy, Attitude.qz);
+        Serial.println(str);
+#endif
     }
 }
 
 // Core 1 Setup
+#ifdef USING_CORE1
 void setup1() 
 {
     // // Start serial
@@ -134,9 +170,9 @@ void loop1()
 
     // If there is data in the multicore fifo, get it and send it
     idx = 0;
-    while (rp2040.fifo.available())
+    while (Core1_FIFO.available())
     {
-        data[idx] = (float)rp2040.fifo.pop();
+        data[idx] = Core1_FIFO.popf();
         idx++;
         if (idx >= sizeof(data))
         {
@@ -148,10 +184,11 @@ void loop1()
     if (rdy)
     {
         rdy = 0;
-        snprintf(str, sizeof(str), "qw=%0.2f,qx=%0.2f,qy=%0.2f,qz=%0.2f", data[0], data[1], data[2], data[3]);
+        snprintf(str, sizeof(str), "qw=%f,qx=%f,qy=%f,qz=%f", data[0], data[1], data[2], data[3]);
         Serial.println(str);
     }
 }
+#endif
 
 //=============================================================================
 // Additional function definitions
