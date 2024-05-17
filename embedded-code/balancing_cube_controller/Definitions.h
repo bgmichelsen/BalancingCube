@@ -1,27 +1,39 @@
 //=============================================================================
 //=============================================================================
-// File:    PinDefs.h
-// Brief:   Defines all the pins used in this project
+// File:    balancing_cub_controller.ino
+// Brief:   Build definitions for the project
 //=============================================================================
 // Author:  Brandon Michelsen
-// Date:    5/12/24
+// Date:    5/16/24
 //=============================================================================
 // This file is used under the MIT license.
 //=============================================================================
 //=============================================================================
 
-#ifndef __PINDEF_H
-#define __PINDEF_H
+#ifndef __BUILD_DEFINES_H
+#define __BUILD_DEFINES_H
 
 //=============================================================================
 // Defines
 //=============================================================================
-// #define LSM6DSOX_I2C0_SDA_PIN   (15)
-// #define LSM6DSOX_I2C0_SDA_PIN   (16)
-// #define LSM6DSOX_INT1_PIN       (36)
 
-#endif // __PINDEF_H
+//
+// Build time defines
+//
+#define USING_CORE_1 true
+
+//
+// Queue FIFO Commands
+//
+#define QUEUE_SEND_ATTITUDE     0
+#define QUEUE_SEND_PID_GAIN     1
+#define QUEUE_SEND_LQR_GAIN     2
+#define QUEUE_SEND_GYRO         3
+#define QUEUE_SEND_ACCEL        4
+#define QUEUE_SEND_CAL          5
+
+#endif // __BUILD_DEFINES_H
 
 //=============================================================================
-// Defines
+// End of file
 //=============================================================================

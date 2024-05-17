@@ -1,108 +1,104 @@
 //=============================================================================
 //=============================================================================
-// File:    CoreQueue.h
-// Brief:   File with prototypes for exchanging data between RP2040 cores
+// File:    AttitudeEstimator.h
+// Brief:   Definitions and prototypes for the attitude estimation
 //=============================================================================
 // Author:  Brandon Michelsen
-// Date:    5/13/24
+// Date:    5/16/24
 //=============================================================================
 // This file is used under the MIT license.
 //=============================================================================
 //=============================================================================
 
-#ifndef __CORE_QUEUE_H
-#define __CORE_QUEUE_H
+#ifndef __ATTITUDE_ESTIMATOR_H
+#define __ATTITUDE_ESTIMATOR_H
 
 //=============================================================================
 // Include Files
 //=============================================================================
-#include <pico/util/queue.h>
+#include "../quaternion/Quaternion.h"
 #include <stdint.h>
 
 //=============================================================================
-// Defines
+// Definitions
 //=============================================================================
 
 //=============================================================================
 // Structs and Types
 //=============================================================================
-typedef struct queue_cmd
-{
-    uint32_t    cmd;
-    float       data[8];
-} queue_cmd_t;
 
 //=============================================================================
-// Class Definitions
+// Class Definition
 //=============================================================================
-class QueueFIFO 
+class AttitudeEstimator
 {
 public:
-    // Constructor/destructor
-    QueueFIFO(size_t size) : _qsize(size) {}
-    ~QueueFIFO() {}
+    AttitudeEstimator() {}
+    ~AttitudeEstimator() {}
 
     //=========================================================================
-    // Name:        QueueFIFO::begin
-    // Brief:       The begin/initialization function for the queue
+    // Name:        AttitudeEstimator::begin
+    // Brief:       Initialize the estimator
     //=========================================================================
     void begin();
 
     //=========================================================================
-    // Name:        QueueFIFO::push(float)
-    // Brief:       Pushes data onto the queue
-    // Param[in]:   data = The value to push
-    // NOTE:        This function blocks until space is available
+    // Name:        AttitudeEstimator::SetQ_Gyro
+    // Brief:       Set the gyro quaternion (derivative quaternion)
+    // Param[in]:   wx = The X gyro rate (Roll)
+    // Param[in]:   wy = The Y gyro rate (Pitch)
+    // Param[in]:   wz = The Z gyro rate (Yaw)
+    // Param[in]:   dt = Sampling time
+    // Retval:      N.A.
     //=========================================================================
-    void push(queue_cmd_t data);
+    void SetQ_Gyro(float wx, float wy, float wz, float dt);
 
     //=========================================================================
-    // Name:        QueueFIFO::push_nb(float)
-    // Brief:       Pushes data onto the queue
-    // Param[in]:   data = The value to push
-    // Retval:      1 on successfull push
-    // NOTE:        This function is non-blocking
+    // Name:        AttitudeEstimator::SetQ_Accel
+    // Brief:       Set the accelerometer quaternion
+    // Param[in]:   ax = The X acceleration (Roll)
+    // Param[in]:   ay = The Y acceleration (Pitch)
+    // Param[in]:   az = The Z acceleration (Yaw)
+    // Param[in]:   dt = Sampling time
+    // Retval:      N.A.
     //=========================================================================
-    bool push_nb(queue_cmd_t data);
+    void SetQ_Accel(float ax, float ay, float az, float dt);
 
     //=========================================================================
-    // Name:        QueueFIFO::popf(float)
-    // Brief:       Pops float data from the queue
-    // Retval:      The FIFO data
-    // NOTE:        This function blocks until data is successfully popped
+    // Name:        AttitudeEstimator::Estimate
+    // Brief:       Estimate the attitude
+    // Retval:      N.A.
+    // NOTE:        Must have set the gyro and accel. quaternions
     //=========================================================================
-    queue_cmd_t pop();
+    void Estimate();
 
     //=========================================================================
-    // Name:        QueueFIFO::popf_nb(float)
-    // Brief:       Pops float data from the queue
-    // Param[out]:  data = The popped value
-    // Retval:      1 on successfull push
-    // NOTE:        This function is non-blocking
+    // Name:        AttitudeEstimator::GetAttitude
+    // Brief:       Get the attitude
+    // Retval:      The attitude of the cube
     //=========================================================================
-    bool pop_nb(queue_cmd_t *const data);
+    Quaternion_t GetAttitude();
 
     //=========================================================================
-    // Name:        QueueFIFO::available
-    // Brief:       Check if there is data in the queue
-    // Retval:      >0 for data available
+    // Name:        AttitudeEstimator::GetQ_Gyro
+    // Brief:       Get the gyro quaternion (derivative quaternion)
+    // Retval:      The derivative quaternion
     //=========================================================================
-    int available();
+    Quaternion_t GetQ_Gyro();
 
     //=========================================================================
-    // Name:        QueueFIFO::available
-    // Brief:       Check if there is data in the queue
-    // Retval:      >0 for data available
+    // Name:        AttitudeEstimator::GetQ_Accel
+    // Brief:       Get the accelerometer quaternion
+    // Retval:      The accelerometer quaternion
     //=========================================================================
-    size_t size();
-
+    Quaternion_t GetQ_Accel();
 private:
-    queue_t         _queue;        // The queue to use for float data
-    size_t          _qsize;         // The size of the queue
+    Quaternion_t _q;
+    Quaternion_t _qd;
+    Quaternion_t _qa;
 };
 
-
-#endif // __CORE_QUEUE_H
+#endif // __ATTITUDE_ESTIMATOR_H
 
 //=============================================================================
 // End of file

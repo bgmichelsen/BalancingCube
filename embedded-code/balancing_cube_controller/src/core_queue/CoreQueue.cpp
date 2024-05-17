@@ -22,8 +22,7 @@
 void QueueFIFO::begin()
 {
     // Initialize the queue
-    queue_init(&_queue32, sizeof(uint32_t), _qsize);
-    queue_init(&_queuef, sizeof(float), _qsize);
+    queue_init(&_queue, sizeof(queue_cmd_t), _qsize);
 }
 
 //=========================================================================
@@ -32,9 +31,9 @@ void QueueFIFO::begin()
 // Param[in]:   data = The value to push
 // NOTE:        This function blocks until space is available
 //=========================================================================
-void QueueFIFO::push(float data) 
+void QueueFIFO::push(queue_cmd_t data) 
 {
-    while (!push_nb(data));
+    while (!push_nb(data)){};
 }
 
 //=========================================================================
@@ -44,32 +43,9 @@ void QueueFIFO::push(float data)
 // Retval:      1 on successfull push
 // NOTE:        This function is non-blocking
 //=========================================================================
-bool QueueFIFO::push_nb(float data) 
+bool QueueFIFO::push_nb(queue_cmd_t data) 
 {
-    return queue_try_add(&_queuef, &data);
-}
-
-//=========================================================================
-// Name:        QueueFIFO::push(uint32_t)
-// Brief:       Pushes data onto the queue
-// Param[in]:   data = The value to push
-// NOTE:        This function blocks until space is available
-//=========================================================================
-void QueueFIFO::push(uint32_t data) 
-{
-    while (!push_nb(data));
-}
-
-//=========================================================================
-// Name:        QueueFIFO::push_nb(uint32_t)
-// Brief:       Pushes data onto the queue
-// Param[in]:   data = The value to push
-// Retval:      1 on successfull push
-// NOTE:        This function is non-blocking
-//=========================================================================
-bool QueueFIFO::push_nb(uint32_t data) 
-{
-    return queue_try_add(&_queue32, &data);
+    return queue_try_add(&_queue, &data);
 }
 
 //=========================================================================
@@ -78,10 +54,10 @@ bool QueueFIFO::push_nb(uint32_t data)
 // Retval:      The FIFO data
 // NOTE:        This function blocks until data is successfully popped
 //=========================================================================
-float QueueFIFO::popf() 
+queue_cmd_t QueueFIFO::pop() 
 {
-    float ret;
-    while (!popf_nb(&ret));
+    queue_cmd_t ret;
+    while (!pop_nb(&ret)){};
     return ret;
 }
 
@@ -92,43 +68,11 @@ float QueueFIFO::popf()
 // Retval:      1 on successfull push
 // NOTE:        This function is non-blocking
 //=========================================================================
-bool QueueFIFO::popf_nb(float *data) 
+bool QueueFIFO::pop_nb(queue_cmd_t *const data) 
 {
-    if (queue_get_level(&_queuef))
+    if (queue_get_level(&_queue))
     {
-        return queue_try_remove(&_queuef, &data);
-    }
-    else
-    {
-        return 0;
-    }
-}
-
-//=========================================================================
-// Name:        QueueFIFO::pop32(uint32)
-// Brief:       Pops uint32 data from the queue
-// Retval:      The FIFO data
-// NOTE:        This function blocks until data is successfully popped
-//=========================================================================
-uint32_t QueueFIFO::pop32() 
-{
-    uint32_t ret;
-    while (!pop32_nb(&ret));
-    return ret;
-}
-
-//=========================================================================
-// Name:        QueueFIFO::pop32_nb(uint32_t)
-// Brief:       Pops float data from the queue
-// Param[out]:  data = The popped value
-// Retval:      1 on successfull push
-// NOTE:        This function is non-blocking
-//=========================================================================
-bool QueueFIFO::pop32_nb(uint32_t *data) 
-{
-    if (queue_get_level(&_queue32))
-    {
-        return queue_try_remove(&_queue32, &data);\
+        return queue_try_remove(&_queue, data);
     }
     else
     {
@@ -144,7 +88,17 @@ bool QueueFIFO::pop32_nb(uint32_t *data)
 //=========================================================================
 int QueueFIFO::available() 
 {
-    return (queue_get_level(&_queue32) || queue_get_level(&_queuef));
+    return (queue_get_level(&_queue));
+}
+
+//=========================================================================
+// Name:        QueueFIFO::available
+// Brief:       Check if there is data in the queue
+// Retval:      >0 for data available
+//=========================================================================
+size_t QueueFIFO::size()
+{
+    return _qsize;
 }
 
 //=========================================================================

@@ -63,3 +63,7 @@ Quaternion_t  Quaternion_ScalarMult(Quaternion_t &q, float scalar);
 Euler_t       Quaternion_Degrees2Euler(float x, float y, float z);
 
 #endif // __QUATERNION_H
+
+//=============================================================================
+// End of file
+//=============================================================================

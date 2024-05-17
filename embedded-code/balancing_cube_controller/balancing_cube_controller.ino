@@ -12,19 +12,16 @@
 
 #include "src/quaternion/Quaternion.h"
 #include "src/core_queue/CoreQueue.h"
+#include "src/attitude/AttitudeEstimator.h"
 #include "LSM6DSOXSensor.h"
 #include "Wire.h"
 #include "PinDefs.h"
+#include "Definitions.h"
 
 #include <string.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <assert.h>
-
-//=============================================================================
-// Defines
-//=============================================================================
-// #define USE_SECOND_CORE
 
 //=============================================================================
 // Objects / RAM
@@ -33,20 +30,42 @@
 //
 // IMU data
 //
-LSM6DSOXSensor  IMU = LSM6DSOXSensor(&Wire, LSM6DSOX_I2C_ADD_L);
+LSM6DSOXSensor IMU = LSM6DSOXSensor(&Wire, LSM6DSOX_I2C_ADD_L);
 
 //
 // Queue data
 //
-#ifdef USING_CORE1
-QueueFIFO       Core0_FIFO = QueueFIFO(8);
-QueueFIFO       Core1_FIFO = QueueFIFO(8);
+#if USING_CORE_1==true
+QueueFIFO Core0_FIFO = QueueFIFO(8);
+QueueFIFO Core1_FIFO = QueueFIFO(8);
 #endif
 
 //
 // Attitude data
 //
-Quaternion_t  Attitude = { 1, 0, 0, 0 };
+AttitudeEstimator Attitude = AttitudeEstimator();
+
+//
+// Gyro and accelerometer data
+//
+struct
+{
+    int32_t wx;             // Roll velocity
+    int32_t wy;             // Pitch velocity
+    int32_t wz;             // Yaw velocity
+    int32_t xf;             // X offset
+    int32_t yf;             // Y offset
+    int32_t zf;             // Z offset
+    int32_t data[3];
+} gyro;
+
+struct
+{
+    int32_t ax;
+    int32_t ay;
+    int32_t az;
+    int32_t data[3];
+} accel;
 
 //
 // Flags
@@ -56,16 +75,22 @@ Quaternion_t  Attitude = { 1, 0, 0, 0 };
 // Additional function prototypes
 //=============================================================================
 
+void Core0_ProcessFIFO(queue_cmd_t &cmd);
+void Core1_ProcessFIFO(queue_cmd_t &cmd);
+void CalibrateGyro(void);
+
 //=============================================================================
 // Core functions
 //=============================================================================
 
+//
 // Core 0 Setup
+//
 void setup() 
 {
     // Local variables
 
-#ifndef USING_CORE1
+#if USING_CORE_1==false
     Serial.begin();
 #endif
 
@@ -85,111 +110,224 @@ void setup()
     }
 
     // Setup scale and ODR for IMU
-    IMU.Set_G_FS(125);      // Scale = +/- 125 degrees per second
+    IMU.Set_G_FS(2000);      // Scale = +/- 2000 degrees per second
     IMU.Set_G_ODR(416.0f);  // ODR = 416 Hz
 
     // Setup IMU interrupt for gyro data ready
-    IMU.Write_Reg(LSM6DSOX_INT1_CTRL, 0x02);
+    // IMU.Write_Reg(LSM6DSOX_INT1_CTRL, 0x02);
+
+    // Calibrate the IMU
+    CalibrateGyro();
+
+#if USING_CORE_1==true
+    // Setup the FIFOs
+    Core0_FIFO.begin();
+    Core1_FIFO.begin();
+#endif
+
+    // Initialize the attitude estimator
+    Attitude.begin();
 }
 
+//
 // Core 0 Main Loop
+//
 void loop() 
 {
     // Local variables
     Euler_t         rads;
-    Quaternion_t    q_prime;
-    uint8_t         GyroDataRdy = 0;
-#ifndef USING_CORE1
+    Quaternion_t    attitude = { 1, 0, 0, 0 };
+    uint8_t         gyro_drdy = 0;
+#if USING_CORE_1==true
+    queue_cmd_t     send_cmd;
+    queue_cmd_t     recv_cmd;
+#else
     char            str[80];
 #endif
-    struct
-    {
-        int32_t wx;
-        int32_t wy;
-        int32_t wz;
-        int32_t data[3];
-    } gyro;
+
+    static uint32_t led_timer = millis();
 
     // Check if data is ready for gyro
-    IMU.Get_G_DRDY_Status(&GyroDataRdy);
-    if (GyroDataRdy)
+    IMU.Get_G_DRDY_Status(&gyro_drdy);
+    if (gyro_drdy)
     {
         // Read the gyro data
-        GyroDataRdy = 0;
+        gyro_drdy = 0;
         IMU.Get_G_Axes(gyro.data);
 
-        gyro.wx = gyro.data[0];
-        gyro.wy = gyro.data[1];
-        gyro.wz = gyro.data[2];
+        gyro.wx = gyro.data[0]; //- gyro.xf;
+        gyro.wy = gyro.data[1]; //- gyro.yf;
+        gyro.wz = gyro.data[2]; //- gyro.zf;
 
         // Convert the gyro from degrees to radians
         rads = Quaternion_Degrees2Euler((float)gyro.wx, 
                                         (float)gyro.wy, 
                                         (float)gyro.wz);
         
-        // Compute the quaternion derivative
-        // See STM's note: DT0060
-        q_prime.qw = 0.5 * (-Attitude.qx*rads.roll - Attitude.qy*rads.pitch - Attitude.qz*rads.yaw);
-        q_prime.qx = 0.5 * (Attitude.qw*rads.roll - Attitude.qz*rads.pitch + Attitude.qy*rads.yaw);
-        q_prime.qy = 0.5 * (Attitude.qz*rads.roll + Attitude.qw*rads.pitch - Attitude.qx*rads.yaw);
-        q_prime.qz = 0.5 * (-Attitude.qy*rads.roll + Attitude.qx*rads.pitch + Attitude.qw*rads.yaw);
+        // Set the gyro quaternion
+        Attitude.SetQ_Gyro(rads.roll, rads.pitch, rads.yaw, 0.002);
 
         // Update the attitude
-        // q_prime = Quaternion_ScalarMult(q_prime, 0.002);    // About 2ms for each timestep
-        Attitude = Quaternion_Add(Attitude, q_prime);
-        Attitude = Quaternion_Norm(Attitude);
-#ifdef USING_CORE1
-        Core1_FIFO.push(0.0f);
-        Core1_FIFO.push(rads.roll);
-        Core1_FIFO.push(rads.pitch);
-        Core1_FIFO.push(rads.yaw);
-#else
-        snprintf(str, sizeof(str), "Core0:qw=%.2f,qx=%.2f,qy=%.2f,qz=%.2f",  
-                  Attitude.qw, Attitude.qx, Attitude.qy, Attitude.qz);
-        Serial.println(str);
+        Attitude.Estimate();
+
+        // Return the attitude
+        attitude = Attitude.GetAttitude();
+
+#if USING_CORE_1==true
+        send_cmd.cmd        = QUEUE_SEND_ATTITUDE;
+        send_cmd.data[0]    = attitude.qw;
+        send_cmd.data[1]    = attitude.qx;
+        send_cmd.data[2]    = attitude.qy;
+        send_cmd.data[3]    = attitude.qz;
+        Core1_FIFO.push(send_cmd);
 #endif
+    }
+
+    // Blink the LED
+    if ((millis() - led_timer) >= 1000)
+    {
+        led_timer = millis();
+        digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
     }
 }
 
+#if USING_CORE_1==true
+//
 // Core 1 Setup
-#ifdef USING_CORE1
+//
 void setup1() 
 {
     // // Start serial
     Serial.begin();
 }
 
+//
 // Core 1 Main Loop
+//
 void loop1()
 {
     // Local variables
-    char      str[256];
-    float     data[4];
-    uint32_t  idx;
-    uint8_t   rdy;
+    queue_cmd_t send_cmd;
+    queue_cmd_t recv_cmd;
+
 
     // If there is data in the multicore fifo, get it and send it
-    idx = 0;
-    while (Core1_FIFO.available())
+    if (Core1_FIFO.available())
     {
-        data[idx] = Core1_FIFO.popf();
-        idx++;
-        if (idx >= sizeof(data))
-        {
-            idx = 0;
-        }
-        rdy = 1;
-    }
-
-    if (rdy)
-    {
-        rdy = 0;
-        snprintf(str, sizeof(str), "qw=%f,qx=%f,qy=%f,qz=%f", data[0], data[1], data[2], data[3]);
-        Serial.println(str);
+        // Pop the command, then process it
+        recv_cmd = Core1_FIFO.pop();
+        Core1_ProcessFIFO(recv_cmd);
     }
 }
 #endif
 
 //=============================================================================
 // Additional function definitions
+//=============================================================================
+
+//=========================================================================
+// Name:        Core0_ProcessFIFO
+// Brief:       Calibrates the gyro
+// Retval:      N.A.
+//=========================================================================
+void CalibrateGyro(void)
+{
+    // Local variables
+    int32_t     x_offset = 0;
+    int32_t     y_offset = 0;
+    int32_t     z_offset = 0;
+    int32_t     data[3];
+    uint8_t     drdy;
+
+    // Take 1000 samples, average them;
+    for (int16_t idx = 0; idx < 10000; idx++)
+    {
+        // Wait for the gyro to have data
+        while (!drdy) 
+        { 
+            IMU.Get_G_DRDY_Status(&drdy); 
+        }
+        IMU.Get_G_Axes(data);
+        x_offset += data[0];
+        y_offset += data[1];
+        z_offset += data[2];
+        drdy = 0;
+    }
+    x_offset /= 10000;
+    y_offset /= 10000;
+    z_offset /= 10000;
+
+    // Set the offsets for calibration
+    gyro.xf = x_offset;
+    gyro.yf = y_offset;
+    gyro.zf = z_offset;
+}
+
+//=========================================================================
+// Name:        Core0_ProcessFIFO
+// Brief:       Processes a FIFO command coming into Core 0
+// Param[in]:   cmd = The command to process
+// Retval:      N.A.
+//=========================================================================
+void Core0_ProcessFIFO(queue_cmd_t &cmd)
+{
+    // Process the command
+    switch (cmd.cmd)
+    {
+        case QUEUE_SEND_ATTITUDE:
+            break;
+        case QUEUE_SEND_PID_GAIN:
+            break;
+        case QUEUE_SEND_LQR_GAIN:
+            break;
+        case QUEUE_SEND_GYRO:
+            break;
+        case QUEUE_SEND_ACCEL:
+            break;
+        case QUEUE_SEND_CAL:
+            break;
+        default:
+            break;  
+    }
+}
+
+//=========================================================================
+// Name:        Core0_ProcessFIFO
+// Brief:       Processes a FIFO command coming into Core 1
+// Param[in]:   cmd = The command to process
+// Retval:      N.A.
+//=========================================================================
+void Core1_ProcessFIFO(queue_cmd_t &cmd)
+{
+    // Local variables
+    char    str[256];
+
+    // Process the command
+    switch (cmd.cmd)
+    {
+        case QUEUE_SEND_ATTITUDE:
+            snprintf(str, sizeof(str), "qw=%1.2f,qx=%1.2f,qy=%1.2f,qz=%1.2f",
+                    cmd.data[0],
+                    cmd.data[1],
+                    cmd.data[2],
+                    cmd.data[3]);
+            Serial.println(str);
+            break;
+        case QUEUE_SEND_PID_GAIN:
+            break;
+        case QUEUE_SEND_LQR_GAIN:
+            break;
+        case QUEUE_SEND_GYRO:
+            break;
+        case QUEUE_SEND_ACCEL:
+            break;
+        case QUEUE_SEND_CAL:
+            break;
+        default:
+            break;  
+    }
+}
+
+//=============================================================================
+// End of file
 //=============================================================================
