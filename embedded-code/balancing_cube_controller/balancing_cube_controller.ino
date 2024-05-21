@@ -13,6 +13,7 @@
 #include "src/quaternion/Quaternion.h"
 #include "src/core_queue/CoreQueue.h"
 #include "src/attitude/AttitudeEstimator.h"
+#include "pico/stdlib.h"
 #include "LSM6DSOXSensor.h"
 #include "Wire.h"
 #include "PinDefs.h"
@@ -43,7 +44,7 @@ QueueFIFO Core1_FIFO = QueueFIFO(8);
 //
 // Attitude data
 //
-AttitudeEstimator Attitude = AttitudeEstimator();
+AttitudeEstimator Attitude = AttitudeEstimator(ATTITUDE_MADGWICK_BETA);
 
 //
 // Gyro and accelerometer data
@@ -64,8 +65,16 @@ struct
     int32_t ax;
     int32_t ay;
     int32_t az;
+    int32_t xf;
+    int32_t yf;
+    int32_t zf;
     int32_t data[3];
 } accel;
+
+//
+// Timer IRQ structs
+//
+struct repeating_timer attitude_ctrl_timer;
 
 //
 // Flags
@@ -75,9 +84,17 @@ struct
 // Additional function prototypes
 //=============================================================================
 
+//
+// Regular functions
+//
 void Core0_ProcessFIFO(queue_cmd_t &cmd);
 void Core1_ProcessFIFO(queue_cmd_t &cmd);
-void CalibrateGyro(void);
+void CalibrateIMU(void);
+
+//
+// ISRs
+//
+bool AttitudeController_cb(struct repeating_timer *t);
 
 //=============================================================================
 // Core functions
@@ -102,6 +119,13 @@ void setup()
     Wire.setClock(400000);
     IMU.begin();
 
+    // Start the accel of the IMU
+    if (LSM6DSOX_OK != IMU.Enable_X())
+    {
+        assert(false);
+        while (1);
+    }
+
     // Start the gyro of the IMU
     if (LSM6DSOX_OK != IMU.Enable_G())
     {
@@ -110,14 +134,13 @@ void setup()
     }
 
     // Setup scale and ODR for IMU
-    IMU.Set_G_FS(2000);      // Scale = +/- 2000 degrees per second
-    IMU.Set_G_ODR(416.0f);  // ODR = 416 Hz
-
-    // Setup IMU interrupt for gyro data ready
-    // IMU.Write_Reg(LSM6DSOX_INT1_CTRL, 0x02);
+    IMU.Set_X_FS(2);            // Accel Scale = +/- 2G
+    IMU.Set_X_ODR(104.0f);      // Accel ODR = 104 Hz
+    IMU.Set_G_FS(1000);         // Gyro Scale = +/- 1000 degrees per second
+    IMU.Set_G_ODR(104.0f);      // Gyro ODR = 104 Hz
 
     // Calibrate the IMU
-    CalibrateGyro();
+    CalibrateIMU();
 
 #if USING_CORE_1==true
     // Setup the FIFOs
@@ -127,6 +150,9 @@ void setup()
 
     // Initialize the attitude estimator
     Attitude.begin();
+
+    // Start timer interrupts
+    add_repeating_timer_ms(ATTITUDE_CTRL_MS, AttitudeController_cb, NULL, &attitude_ctrl_timer);
 }
 
 //
@@ -135,9 +161,7 @@ void setup()
 void loop() 
 {
     // Local variables
-    Euler_t         rads;
     Quaternion_t    attitude = { 1, 0, 0, 0 };
-    uint8_t         gyro_drdy = 0;
 #if USING_CORE_1==true
     queue_cmd_t     send_cmd;
     queue_cmd_t     recv_cmd;
@@ -146,29 +170,11 @@ void loop()
 #endif
 
     static uint32_t led_timer = millis();
+    static uint32_t data_timer = millis();
 
-    // Check if data is ready for gyro
-    IMU.Get_G_DRDY_Status(&gyro_drdy);
-    if (gyro_drdy)
+    if ((millis() - data_timer) >= 100)
     {
-        // Read the gyro data
-        gyro_drdy = 0;
-        IMU.Get_G_Axes(gyro.data);
-
-        gyro.wx = gyro.data[0]; //- gyro.xf;
-        gyro.wy = gyro.data[1]; //- gyro.yf;
-        gyro.wz = gyro.data[2]; //- gyro.zf;
-
-        // Convert the gyro from degrees to radians
-        rads = Quaternion_Degrees2Euler((float)gyro.wx, 
-                                        (float)gyro.wy, 
-                                        (float)gyro.wz);
-        
-        // Set the gyro quaternion
-        Attitude.SetQ_Gyro(rads.roll, rads.pitch, rads.yaw, 0.002);
-
-        // Update the attitude
-        Attitude.Estimate();
+        data_timer = millis();
 
         // Return the attitude
         attitude = Attitude.GetAttitude();
@@ -226,41 +232,114 @@ void loop1()
 //=============================================================================
 
 //=========================================================================
+// Name:        AttitudeController
+// Brief:       Callback for the attitude controller
+// Param[in]:   t = The timer running the callback
+// Retval:      true for successful completion, false otherwise
+//=========================================================================
+bool AttitudeController_cb(struct repeating_timer *t)
+{
+    // Local variables
+    Euler_t         rads;
+    uint8_t         gyro_drdy = 0;
+    uint8_t         accel_drdy = 0;
+
+    // Check if data is ready for 
+    IMU.Get_X_DRDY_Status(&accel_drdy);
+    if (accel_drdy)
+    {
+        // Read the accelerometer
+        IMU.Get_X_Axes(accel.data);
+
+        accel.ax = accel.data[0]; // - accel.xf;
+        accel.ay = accel.data[1]; // - accel.yf;
+        accel.az = accel.data[2]; // - accel.zf;
+
+        // Set the accelerometer quaternion
+        Attitude.SetQ_Accel(accel.ax, accel.ay, accel.az);
+    }
+
+    // Check if data is ready for gyro
+    IMU.Get_G_DRDY_Status(&gyro_drdy);
+    if (gyro_drdy)
+    {
+        // Read the gyro data
+        IMU.Get_G_Axes(gyro.data);
+
+        gyro.wx = gyro.data[0] - gyro.xf;
+        gyro.wy = gyro.data[1] - gyro.yf;
+        gyro.wz = gyro.data[2] - gyro.zf;
+
+        // Convert the gyro from degrees to radians
+        rads = Quaternion_Degrees2Euler((float)gyro.wx, 
+                                        (float)gyro.wy, 
+                                        (float)gyro.wz);
+        
+        // Set the gyro quaternion
+        Attitude.SetQ_Gyro(rads.roll, rads.pitch, rads.yaw);
+    }
+
+    // Update the attitude
+    if (accel_drdy && gyro_drdy)
+    {
+        Attitude.Estimate(ATTITUDE_CTRL_SECONDS);
+    }
+
+    return (true);
+}
+
+//=========================================================================
 // Name:        Core0_ProcessFIFO
 // Brief:       Calibrates the gyro
 // Retval:      N.A.
 //=========================================================================
-void CalibrateGyro(void)
+void CalibrateIMU(void)
 {
     // Local variables
-    int32_t     x_offset = 0;
-    int32_t     y_offset = 0;
-    int32_t     z_offset = 0;
+    int32_t     xg_offset = 0;
+    int32_t     yg_offset = 0;
+    int32_t     zg_offset = 0;
+    int32_t     xa_offset = 0;
+    int32_t     ya_offset = 0;
+    int32_t     za_offset = 0;
     int32_t     data[3];
-    uint8_t     drdy;
+    uint8_t     gdrdy = 0;
+    uint8_t     adrdy = 0;
 
     // Take 1000 samples, average them;
-    for (int16_t idx = 0; idx < 10000; idx++)
+    for (int16_t idx = 0; idx < 1000; idx++)
     {
         // Wait for the gyro to have data
-        while (!drdy) 
-        { 
-            IMU.Get_G_DRDY_Status(&drdy); 
+        while (!gdrdy && !adrdy) 
+        {
+            IMU.Get_X_DRDY_Status(&adrdy);
+            IMU.Get_G_DRDY_Status(&gdrdy); 
         }
         IMU.Get_G_Axes(data);
-        x_offset += data[0];
-        y_offset += data[1];
-        z_offset += data[2];
-        drdy = 0;
+        xg_offset += data[0];
+        yg_offset += data[1];
+        zg_offset += data[2];
+        IMU.Get_X_Axes(data);
+        xa_offset += data[0];
+        ya_offset += data[1];
+        za_offset += data[2];
+        gdrdy = 0;
+        adrdy = 0;
     }
-    x_offset /= 10000;
-    y_offset /= 10000;
-    z_offset /= 10000;
+    xg_offset /= 1000;
+    yg_offset /= 1000;
+    zg_offset /= 1000;
+    xa_offset /= 1000;
+    ya_offset /= 1000;
+    za_offset /= 1000;
 
     // Set the offsets for calibration
-    gyro.xf = x_offset;
-    gyro.yf = y_offset;
-    gyro.zf = z_offset;
+    gyro.xf     = xg_offset;
+    gyro.yf     = yg_offset;
+    gyro.zf     = zg_offset;
+    accel.xf    = xa_offset;
+    accel.yf    = ya_offset;
+    accel.zf    = za_offset;
 }
 
 //=========================================================================

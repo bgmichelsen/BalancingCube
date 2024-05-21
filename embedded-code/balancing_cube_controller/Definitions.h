@@ -32,6 +32,14 @@
 #define QUEUE_SEND_ACCEL        4
 #define QUEUE_SEND_CAL          5
 
+//
+// Attitude controller timing
+// 
+#define ATTITUDE_CTRL_FREQ      52              // 56Hz
+#define ATTITUDE_CTRL_MS        20              // 1/freq = 1/52 = ~0.020sec = 20ms
+#define ATTITUDE_CTRL_SECONDS   ((float)0.02)   // <--|
+#define ATTITUDE_MADGWICK_BETA  ((float)0.07)    // Madgwick filter beta (tunable)
+
 #endif // __BUILD_DEFINES_H
 
 //=============================================================================
