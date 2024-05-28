@@ -51,9 +51,9 @@ AttitudeEstimator Attitude = AttitudeEstimator(ATTITUDE_MADGWICK_BETA);
 //
 struct
 {
-    int32_t wx;             // Roll velocity
-    int32_t wy;             // Pitch velocity
-    int32_t wz;             // Yaw velocity
+    float   wx;             // Roll velocity
+    float   wy;             // Pitch velocity
+    float   wz;             // Yaw velocity
     int32_t xf;             // X offset
     int32_t yf;             // Y offset
     int32_t zf;             // Z offset
@@ -62,9 +62,9 @@ struct
 
 struct
 {
-    int32_t ax;
-    int32_t ay;
-    int32_t az;
+    float   ax;
+    float   ay;
+    float   az;
     int32_t xf;
     int32_t yf;
     int32_t zf;
@@ -106,6 +106,7 @@ bool AttitudeController_cb(struct repeating_timer *t);
 void setup() 
 {
     // Local variables
+    uint8_t     reg = 0;
 
 #if USING_CORE_1==false
     Serial.begin();
@@ -118,6 +119,11 @@ void setup()
     Wire.begin();
     Wire.setClock(400000);
     IMU.begin();
+
+    // Enable block data update unit
+    IMU.Read_Reg(LSM6DSOX_CTRL3_C, &reg);
+    reg |= 0x40;
+    IMU.Write_Reg(LSM6DSOX_CTRL3_C, reg);
 
     // Start the accel of the IMU
     if (LSM6DSOX_OK != IMU.Enable_X())
@@ -134,10 +140,10 @@ void setup()
     }
 
     // Setup scale and ODR for IMU
-    IMU.Set_X_FS(2);            // Accel Scale = +/- 2G
-    IMU.Set_X_ODR(104.0f);      // Accel ODR = 104 Hz
-    IMU.Set_G_FS(1000);         // Gyro Scale = +/- 1000 degrees per second
-    IMU.Set_G_ODR(104.0f);      // Gyro ODR = 104 Hz
+    IMU.Set_X_FS(2);                        // Accel Scale = +/- 2G
+    IMU.Set_X_ODR(ATTITUDE_CTRL_FREQ);      // Accel ODR = 52 Hz
+    IMU.Set_G_FS(1000);                     // Gyro Scale = +/- 1000 degrees per second
+    IMU.Set_G_ODR(ATTITUDE_CTRL_FREQ);      // Gyro ODR = 52 Hz
 
     // Calibrate the IMU
     CalibrateIMU();
@@ -152,7 +158,7 @@ void setup()
     Attitude.begin();
 
     // Start timer interrupts
-    add_repeating_timer_ms(ATTITUDE_CTRL_MS, AttitudeController_cb, NULL, &attitude_ctrl_timer);
+    add_repeating_timer_us(ATTITUDE_CTRL_uS, AttitudeController_cb, NULL, &attitude_ctrl_timer);
 }
 
 //
@@ -161,7 +167,8 @@ void setup()
 void loop() 
 {
     // Local variables
-    Quaternion_t    attitude = { 1, 0, 0, 0 };
+    Quaternion_t    attitude  = { 1, 0, 0, 0 };
+    Euler_t         angles    = { 0, 0, 0 };
 #if USING_CORE_1==true
     queue_cmd_t     send_cmd;
     queue_cmd_t     recv_cmd;
@@ -177,15 +184,39 @@ void loop()
         data_timer = millis();
 
         // Return the attitude
-        attitude = Attitude.GetAttitude();
-
+        attitude    = Attitude.GetAttitude();
+        angles      = Quaternion_Quat2Euler(attitude);
 #if USING_CORE_1==true
-        send_cmd.cmd        = QUEUE_SEND_ATTITUDE;
-        send_cmd.data[0]    = attitude.qw;
-        send_cmd.data[1]    = attitude.qx;
-        send_cmd.data[2]    = attitude.qy;
-        send_cmd.data[3]    = attitude.qz;
+        // send_cmd.cmd        = QUEUE_SEND_ATTITUDE;
+        // send_cmd.data[0]    = attitude.qw;
+        // send_cmd.data[1]    = attitude.qx;
+        // send_cmd.data[2]    = attitude.qy;
+        // send_cmd.data[3]    = attitude.qz;
+        // Core1_FIFO.push(send_cmd);
+
+        send_cmd.cmd        = QUEUE_SEND_EULER;
+        send_cmd.data[0]    = angles.roll*RAD_2_DEGREE;
+        send_cmd.data[1]    = angles.pitch*RAD_2_DEGREE;
+        send_cmd.data[2]    = angles.yaw*RAD_2_DEGREE;
         Core1_FIFO.push(send_cmd);
+
+        // send_cmd.cmd        = QUEUE_SEND_ACCEL;
+        // send_cmd.data[0]    = accel.ax;
+        // send_cmd.data[1]    = accel.ay;
+        // send_cmd.data[2]    = accel.az;
+        // Core1_FIFO.push(send_cmd);
+
+        // send_cmd.cmd        = QUEUE_SEND_GYRO;
+        // send_cmd.data[0]    = gyro.wx;
+        // send_cmd.data[1]    = gyro.wy;
+        // send_cmd.data[2]    = gyro.wz;
+        // Core1_FIFO.push(send_cmd);
+
+        // send_cmd.cmd        = QUEUE_SEND_LQR_TARGETS;
+        // send_cmd.data[0]    = (2*asin(attitude.qx))*RAD_2_DEGREE;
+        // send_cmd.data[1]    = (2*asin(attitude.qy))*RAD_2_DEGREE;
+        // send_cmd.data[2]    = (2*asin(attitude.qz))*RAD_2_DEGREE;
+        // Core1_FIFO.push(send_cmd);
 #endif
     }
 
@@ -240,9 +271,9 @@ void loop1()
 bool AttitudeController_cb(struct repeating_timer *t)
 {
     // Local variables
-    Euler_t         rads;
     uint8_t         gyro_drdy = 0;
     uint8_t         accel_drdy = 0;
+    float           gx_new, gy_new, gz_new;
 
     // Check if data is ready for 
     IMU.Get_X_DRDY_Status(&accel_drdy);
@@ -251,9 +282,9 @@ bool AttitudeController_cb(struct repeating_timer *t)
         // Read the accelerometer
         IMU.Get_X_Axes(accel.data);
 
-        accel.ax = accel.data[0]; // - accel.xf;
-        accel.ay = accel.data[1]; // - accel.yf;
-        accel.az = accel.data[2]; // - accel.zf;
+        accel.ax = (float)(accel.data[0]) / 1000.0f;
+        accel.ay = (float)(accel.data[1]) / 1000.0f;
+        accel.az = (float)(accel.data[2]) / 1000.0f; // - accel.zf;
 
         // Set the accelerometer quaternion
         Attitude.SetQ_Accel(accel.ax, accel.ay, accel.az);
@@ -266,24 +297,16 @@ bool AttitudeController_cb(struct repeating_timer *t)
         // Read the gyro data
         IMU.Get_G_Axes(gyro.data);
 
-        gyro.wx = gyro.data[0] - gyro.xf;
-        gyro.wy = gyro.data[1] - gyro.yf;
-        gyro.wz = gyro.data[2] - gyro.zf;
-
-        // Convert the gyro from degrees to radians
-        rads = Quaternion_Degrees2Euler((float)gyro.wx, 
-                                        (float)gyro.wy, 
-                                        (float)gyro.wz);
+        gx_new = (float)(gyro.data[0] - gyro.xf)*DEGREE_2_RAD;
+        gy_new = (float)(gyro.data[1] - gyro.yf)*DEGREE_2_RAD;
+        gz_new = (float)(gyro.data[2] - gyro.zf)*DEGREE_2_RAD;
         
         // Set the gyro quaternion
-        Attitude.SetQ_Gyro(rads.roll, rads.pitch, rads.yaw);
+        Attitude.SetQ_Gyro(gyro.wx, gyro.wy, gyro.wz);
     }
 
     // Update the attitude
-    if (accel_drdy && gyro_drdy)
-    {
-        Attitude.Estimate(ATTITUDE_CTRL_SECONDS);
-    }
+    Attitude.Estimate(ATTITUDE_CTRL_SECONDS);
 
     return (true);
 }
@@ -307,7 +330,7 @@ void CalibrateIMU(void)
     uint8_t     adrdy = 0;
 
     // Take 1000 samples, average them;
-    for (int16_t idx = 0; idx < 1000; idx++)
+    for (int16_t idx = 0; idx < 256; idx++)
     {
         // Wait for the gyro to have data
         while (!gdrdy && !adrdy) 
@@ -326,12 +349,12 @@ void CalibrateIMU(void)
         gdrdy = 0;
         adrdy = 0;
     }
-    xg_offset /= 1000;
-    yg_offset /= 1000;
-    zg_offset /= 1000;
-    xa_offset /= 1000;
-    ya_offset /= 1000;
-    za_offset /= 1000;
+    xg_offset /= 256;
+    yg_offset /= 256;
+    zg_offset /= 256;
+    xa_offset /= 256;
+    ya_offset /= 256;
+    za_offset /= 256;
 
     // Set the offsets for calibration
     gyro.xf     = xg_offset;
@@ -385,26 +408,51 @@ void Core1_ProcessFIFO(queue_cmd_t &cmd)
     switch (cmd.cmd)
     {
         case QUEUE_SEND_ATTITUDE:
-            snprintf(str, sizeof(str), "qw=%1.2f,qx=%1.2f,qy=%1.2f,qz=%1.2f",
+            snprintf(str, sizeof(str), "qw:%1.2f,qx:%1.2f,qy:%1.2f,qz:%1.2f",
                     cmd.data[0],
                     cmd.data[1],
                     cmd.data[2],
                     cmd.data[3]);
-            Serial.println(str);
+            Serial.print(str);
             break;
         case QUEUE_SEND_PID_GAIN:
             break;
         case QUEUE_SEND_LQR_GAIN:
             break;
         case QUEUE_SEND_GYRO:
+            snprintf(str, sizeof(str), "wx:%1.2f,wy:%1.2f,wz:%1.2f",
+                    cmd.data[0],
+                    cmd.data[1],
+                    cmd.data[2]);
+            Serial.print(str);
             break;
         case QUEUE_SEND_ACCEL:
+            snprintf(str, sizeof(str), "ax:%1.2f,ay:%1.2f,az:%1.2f",
+                    cmd.data[0],
+                    cmd.data[1],
+                    cmd.data[2]);
+            Serial.print(str);
             break;
         case QUEUE_SEND_CAL:
             break;
+        case QUEUE_SEND_EULER:
+            snprintf(str, sizeof(str), "r:%1.2f,p:%1.2f,y:%1.2f",
+                    cmd.data[0],
+                    cmd.data[1],
+                    cmd.data[2]);
+            Serial.print(str);
+            break;
+        case QUEUE_SEND_LQR_TARGETS:
+            snprintf(str, sizeof(str), "t1:%1.2f,t2:%1.2f,t3:%1.2f",
+                    cmd.data[0],
+                    cmd.data[1],
+                    cmd.data[2]);
+            Serial.print(str);
+            break;
         default:
-            break;  
+            break;
     }
+    Serial.print("\r\n");
 }
 
 //=============================================================================

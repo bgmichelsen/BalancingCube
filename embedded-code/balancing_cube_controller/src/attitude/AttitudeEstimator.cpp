@@ -73,41 +73,50 @@ void AttitudeEstimator::SetQ_Accel(float ax, float ay, float az)
     _qa.qy = ay;
     _qa.qz = az;
 
-    // Normalize the accelerometer measurements
-    _qa = Quaternion_Norm(_qa);
+    if ((0.0f != ax) || (0.0f != ay) || (0.0f != az))
+    {
+        // Normalize the accelerometer measurements
+        _qa = Quaternion_Norm(_qa);
 
-    // Update the objective function
-    fg[0] = 2*(_q.qx*_q.qz - _q.qw*_q.qy) - _qa.qx;
-    fg[1] = 2*(_q.qw*_q.qx + _q.qy*_q.qz) - _qa.qy;
-    fg[2] = 2*(0.5 - _q.qx*_q.qx - _q.qy*_q.qy) - _qa.qz;
+        // Update the objective function
+        fg[0] = 2*(_q.qx*_q.qz - _q.qw*_q.qy) - _qa.qx;
+        fg[1] = 2*(_q.qw*_q.qx + _q.qy*_q.qz) - _qa.qy;
+        fg[2] = 2*(0.5 - _q.qx*_q.qx - _q.qy*_q.qy) - _qa.qz;
 
-    // Update the Jacobian
-    J[0][0] = -2*_q.qy;
-    J[0][1] =  2*_q.qz;
-    J[0][2] = -2*_q.qw;
-    J[0][3] =  2*_q.qx;
+        // Update the Jacobian
+        J[0][0] = -2*_q.qy;
+        J[0][1] =  2*_q.qz;
+        J[0][2] = -2*_q.qw;
+        J[0][3] =  2*_q.qx;
 
-    J[1][0] =  2*_q.qx;
-    J[1][1] =  2*_q.qw;
-    J[1][2] =  2*_q.qz;
-    J[1][3] =  2*_q.qy;
+        J[1][0] =  2*_q.qx;
+        J[1][1] =  2*_q.qw;
+        J[1][2] =  2*_q.qz;
+        J[1][3] =  2*_q.qy;
 
-    J[2][0] =  0.0f;
-    J[2][1] = -4*_q.qx;
-    J[2][2] = -4*_q.qy;
-    J[2][3] =  0.0f;
+        J[2][0] =  0.0f;
+        J[2][1] = -4*_q.qx;
+        J[2][2] = -4*_q.qy;
+        J[2][3] =  0.0f;
 
-    // Calculate the gradient descent
-    _qa.qw = J[0][0]*fg[0] + J[1][0]*fg[1] + J[2][0]*fg[2];
-    _qa.qx = J[0][1]*fg[0] + J[1][1]*fg[1] + J[2][1]*fg[2];
-    _qa.qy = J[0][2]*fg[0] + J[1][2]*fg[1] + J[2][2]*fg[2];
-    _qa.qz = J[0][3]*fg[0] + J[1][3]*fg[1] + J[2][3]*fg[2];
+        // Calculate the gradient descent
+        _qa.qw = J[0][0]*fg[0] + J[1][0]*fg[1] + J[2][0]*fg[2];
+        _qa.qx = J[0][1]*fg[0] + J[1][1]*fg[1] + J[2][1]*fg[2];
+        _qa.qy = J[0][2]*fg[0] + J[1][2]*fg[1] + J[2][2]*fg[2];
+        _qa.qz = J[0][3]*fg[0] + J[1][3]*fg[1] + J[2][3]*fg[2];
 
-    // Normalize the gradient decent
-    _qa = Quaternion_Norm(_qa);
+        // Normalize the gradient decent
+        _qa = Quaternion_Norm(_qa);
 
-    // Multiply by beta
-    _qa = Quaternion_ScalarMult(_qa, _beta);
+        // Multiply by beta
+        _qa = Quaternion_ScalarMult(_qa, _beta);
+
+        _corrected = 1;
+    }
+    else
+    {
+        _corrected = 0;
+    }
 }
 
 //=========================================================================
@@ -119,10 +128,20 @@ void AttitudeEstimator::SetQ_Accel(float ax, float ay, float az)
 void AttitudeEstimator::Estimate(float dt)
 {
     // Fuse the measurements from accel and gyro into derivative quaternion
-    _qd.qw = _qg.qw - _qa.qw;
-    _qd.qx = _qg.qx - _qa.qx;
-    _qd.qy = _qg.qy - _qa.qy;
-    _qd.qz = _qg.qz - _qa.qz;
+    if (_corrected)
+    {
+        _qd.qw = _qg.qw - _qa.qw;
+        _qd.qx = _qg.qx - _qa.qx;
+        _qd.qy = _qg.qy - _qa.qy;
+        _qd.qz = _qg.qz - _qa.qz;
+    }
+    else
+    {
+        _qd.qw = _qg.qw;
+        _qd.qx = _qg.qx;
+        _qd.qy = _qg.qy;
+        _qd.qz = _qg.qz;
+    }
     _qd = Quaternion_ScalarMult(_qd, dt);
 
     // Calculate the attitude from the derivative quaternion

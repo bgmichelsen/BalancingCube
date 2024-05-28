@@ -100,6 +100,7 @@ private:
     Quaternion_t    _qa;
     Quaternion_t    _qg;
     float           _beta;
+    uint8_t         _corrected;
 };
 
 #endif // __ATTITUDE_ESTIMATOR_H
